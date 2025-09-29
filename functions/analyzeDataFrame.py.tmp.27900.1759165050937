@@ -1,0 +1,279 @@
+# This function cleans the raw dataframe of either mode and converts to a meaningful dataframe
+
+import pandas as pd
+import streamlit as st
+
+
+def analyzeDataFrame(dataframe):
+    ## INITIALIZE BRAND NAME - get from app inputs
+    import builtins
+    brand_name = getattr(builtins, 'brand_name_input', 'Brand')
+    brand_domain = getattr(builtins, 'brand_domain_input', 'example.com')
+
+    # Handle different input formats
+    if dataframe is None:
+        st.error("No data provided for analysis")
+        return None
+
+    # Convert to proper format
+    if isinstance(dataframe, pd.DataFrame):
+        # If it's already a DataFrame from fetchKeywords, convert to records
+        df = dataframe.copy()
+        if df.empty:
+            st.error("No data available for analysis")
+            return None
+        # Rename first column to raw_data if needed
+        if df.columns[0] != 'raw_data':
+            df.columns = ['raw_data']
+    else:
+        # If it's a list of records
+        df = pd.DataFrame(dataframe)
+        df.columns = ['raw_data']
+
+    # Check if raw_data contains the expected structure
+    if df.empty or 'raw_data' not in df.columns:
+        st.error("Data format is not compatible for analysis")
+        return None
+
+    # Safely extract keyword information
+    try:
+        df['keyword'] = df['raw_data'].apply(lambda x: x.get('keyword', 'Unknown') if isinstance(x, dict) else 'Unknown')
+        df = df.reindex(columns=['keyword', 'raw_data'])
+    except Exception as e:
+        st.error(f"Error processing keyword data: {str(e)}")
+        return None
+
+    ## CREATE SUB DATASET FOR AI OVERVIEWS
+    aio_data = []
+    aio = df['raw_data'].tolist()
+
+    for json in aio:
+        for i in json['items']:
+            if 'ai_overview' in i['type']:
+                aio_data.append(json)
+
+    df_aio = pd.DataFrame(aio_data)
+    df_aio = df_aio.drop(columns=['location_code','language_code', 'items_count','type', 'se_domain', 'check_url', 'datetime', 'spell', 'refinement_chips', 'se_results_count', 'item_types'])
+
+
+    # get only ai_overview type element from items
+    df_aio['aio'] = df_aio['items'].apply(lambda x: [item for item in x if item['type'] == 'ai_overview'])
+
+    # HANDLE MARKDOWN
+    ## create column for aio_markdown
+    df_aio['aio_markdown'] = df_aio['aio'].apply(lambda x: x[0]['markdown'] if x else None)
+
+    # clean markdown citations with regex
+    import re
+
+
+    ## Write function to clean markdown
+    def clean_markdown_citations(md: str) -> str:
+        """
+        - Remove citation-style links: [[label]](url)
+        - Replace normal links with their visible text (exclude images)
+        - Tidy whitespace created by removals
+        """
+        # 1) Drop citations like [[1]](http...) or [[abc]](http...)
+        md = re.sub(r'\s*\[\[[^\[\]]+\]\]\s*\([^)]+\)', '', md)
+
+        # 2) Turn [text](url) into "text", but keep images ![alt](url) intact
+        md = re.sub(r'(?<!!)\[([^\]]+)\]\([^)]+\)', r'\1', md)
+
+        # 2.1) Delete images ![alt](url)
+        md = re.sub(r'!\[([^\]]*)\]\([^)]+\)', '', md)
+
+        # 3) Tidy whitespace and spacing before punctuation
+        md = re.sub(r'[ \t]+', ' ', md)
+        md = re.sub(r'\s+([.,;:!?])', r'\1', md)
+
+        # 4) Trim per-line and overall
+        md = '\n'.join(line.strip() for line in md.splitlines())
+        return md.strip()
+
+
+    ## Pass markdown column through the function
+    df_aio['aio_markdown'] = df_aio['aio_markdown'].apply(lambda x: clean_markdown_citations(x) if x else None)
+
+
+    # HANDLE REFERENCES
+    # create column for aio_references
+    df_aio['aio_references'] = df_aio['aio'].apply(lambda x: x[0]['references'] if x else None)
+
+    # clean the dict keys
+    def clean_dict_keys(list_of_dicts: list) -> list:
+        cleaned_list = []
+        for idx, item in enumerate(list_of_dicts, start=1):
+            # Create dictionary with keys in desired order
+            cleaned_dict = {
+                'rank': idx,
+                'domain': item.get('domain', ''),
+                'source': item.get('source', ''),
+                'url': item.get('url', '')
+            }
+            cleaned_list.append(cleaned_dict)
+        return cleaned_list
+
+    # apply the function to aio_references column
+    df_aio['aio_references'] = df_aio['aio_references'].apply(lambda x: clean_dict_keys(x) if x else None)
+
+    # create column for number of references
+    df_aio['aio_references_count'] = df_aio['aio_references'].apply(lambda x: len(x) if x else 0)
+
+
+    # GET BRAND CITATION RANKING
+    def get_brand_rank(references: list) -> int:
+        if references:
+            for ref in references:
+                if brand_domain in ref['domain'].lower() or brand_name in ref['source'].lower():
+                    return ref['rank']
+        return None
+
+    df_aio[f"{brand_name}_rank"] = df_aio['aio_references'].apply(get_brand_rank)
+
+
+    ## remerge df_aio with df on keyword, the number of rows should stay the same as df (8031 keywords)
+    df_aio = df_aio.drop_duplicates('keyword')
+    df_merged = pd.merge(df, df_aio[['keyword', 'aio_markdown', 'aio_references', 'aio_references_count', f'{brand_name}_rank']], on='keyword', how='left')
+
+
+    ## download to csv
+    df_download = df_merged.drop(columns=['aio_markdown', 'raw_data'])
+
+
+    # remove source and url from aio_references for csv export
+    def simplify_refs(refs):
+        # handle NaN (float), None, and non-iterable values safely
+        if refs is None:
+            return None
+        # pandas uses float('nan') for missing values
+        if isinstance(refs, float) and pd.isna(refs):
+            return None
+        # expected: list of dicts
+        if isinstance(refs, list):
+            return [{'rank': ref.get('rank'), 'domain': ref.get('domain')} for ref in refs]
+        # if a single dict is present, convert it to list form
+        if isinstance(refs, dict):
+            return [{'rank': refs.get('rank'), 'domain': refs.get('domain')}]
+        # fallback
+        return None
+
+    df_download['aio_references'] = df_download['aio_references'].apply(simplify_refs)
+
+    ## download file
+    df_download.to_csv('keywords.csv', index=False)
+
+
+    # COMPETITOR ANALYSIS
+    ## get all the cited names
+
+    extracted_ref = df_aio['aio_references'].explode().reset_index(drop=True)
+    extracted_ref = pd.DataFrame(extracted_ref)
+    extracted_ref['domain'] = extracted_ref['aio_references'].apply(lambda x: x['domain'] if x else None)
+    extracted_ref['name'] = extracted_ref['aio_references'].apply(lambda x: x['source'] if x else None)
+    extracted_ref['rank'] = extracted_ref['aio_references'].apply(lambda x: x['rank'] if x else None)
+
+
+    ## create unique competitors table
+    ref_brands = extracted_ref['name'].drop_duplicates().dropna().reset_index(drop=True)
+    ref_brands = ref_brands.to_list()
+    ref_brands = list(filter(None, ref_brands))
+    ref_brands = pd.DataFrame(ref_brands)
+    ref_brands.columns = ['brand']
+
+    ## write function
+    brand_list = []
+    for brand in ref_brands['brand']:
+        brand_dict = {}
+        brand_dict['brand'] = brand
+        brand_dict['cited_count'] = extracted_ref[extracted_ref['name'] == brand].shape[0]
+        brand_dict['unique_domains'] = extracted_ref[extracted_ref['name'] == brand]['domain'].unique().tolist()
+        brand_dict['average_rank'] = extracted_ref[extracted_ref['name'] == brand]['rank'].mean()
+        brand_dict['cited_probability'] = brand_dict['cited_count'] / extracted_ref.shape[0]
+        ## create column for the number of prompts where the brand is cited
+        brand_dict['cited_in_prompts'] = df_aio[df_aio['aio_references'].apply(lambda refs: any(ref and ref.get('source') == brand for ref in refs) if refs else False)].shape[0]
+        brand_dict['prompt_cited_rate'] = brand_dict['cited_in_prompts'] / df_aio.shape[0]
+        brand_list.append(brand_dict)
+    brand_list_df = pd.DataFrame(brand_list).sort_values(by='cited_count', ascending=False).reset_index(drop=True)
+
+
+    ## download file
+    brand_list_df.to_csv('competitor.csv', index=False)
+
+    # BRAND MENTIONS
+    # append all competitors into a single list called brand_competitor, with only name and domain, name is "brand" in brand_list_df, domain is "unique_domains" in brand_list_df
+
+    brand_competitor = []
+    for index, row in brand_list_df.iterrows():
+        brand_competitor.append({
+            "name": row['brand'],
+            "domain": row['unique_domains'] if row['unique_domains'] else None
+        })
+
+    df_competitor = pd.DataFrame(brand_competitor)
+
+
+    ## get prompt citation rate for each competitor from brand_list_df using domain matching
+    # brand_list_df contains 'unique_domains' (list) and 'cited_in_prompts' (count)
+    from urllib.parse import urlparse
+    import re
+
+    def _extract_host(u: str) -> str:
+        if not u:
+            return ""
+        u = str(u).strip().lower()
+        # try parse URL first
+        if "://" in u:
+            try:
+                host = urlparse(u).hostname or u
+            except Exception:
+                host = u
+        else:
+            host = u.split("/")[0].split(":")[0]
+        # drop leading www.
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+
+    def _domain_label_match(comp: str, ud: str) -> bool:
+        if not comp or not ud:
+            return False
+        comp = comp.lower().strip()
+        ud_host = _extract_host(ud)
+        # pattern ensures comp appears as a domain label (start, end or separated by dots)
+        pattern = r'(^|\.)' + re.escape(comp) + r'($|\.)'
+        return bool(re.search(pattern, ud_host))
+
+    ## Checks brand mention for each competitor with regex in the aio_markdown column, use the "name" column and the "japanese_name" column of df_competitor if available
+    def check_brand_mention(brand: str, text: str, japanese_name: str = None) -> bool:
+        if pd.isna(text) or not text:
+            return False
+
+        candidates = []
+        if brand:
+            candidates.append(str(brand))
+        for name in candidates:
+            # match whole word boundaries; escape special chars
+            pattern = r'\b' + re.escape(name) + r'\b'
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+        return False
+
+
+
+    # inherit cited_in_prompts, average_rank, prompt_cited_rate from brand_list_df
+    df_competitor = pd.merge(df_competitor, brand_list_df[['brand', 'cited_in_prompts', 'average_rank', 'prompt_cited_rate']], left_on='name', right_on='brand', how='left')
+    df_competitor = df_competitor.drop(columns=['brand'])
+    df_competitor['cited_in_prompts'] = df_competitor['cited_in_prompts'].fillna(0).astype(int)
+
+
+    df_competitor['mentioned'] = df_competitor.apply(
+        lambda row: df_merged['aio_markdown']
+            .apply(lambda text: check_brand_mention(row.get('name'), text, row.get('japanese_name')))
+            .sum(),
+        axis=1
+    )
+    df_competitor['prompt_cited_rate'] = df_competitor['cited_in_prompts'] / df_aio.shape[0]
+    df_competitor['mention_rate'] = df_competitor['mentioned'] / df_aio.shape[0]
+    df_competitor.to_csv('brand-mention-summary.csv', index=False)
+    return None
