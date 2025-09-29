@@ -1,8 +1,8 @@
 import json, requests, pandas as pd
-from tqdm.auto import tqdm
 from concurrent.futures import ThreadPoolExecutor
 import os
 from dotenv import load_dotenv
+import tqdm
 load_dotenv()
 
 # initialize SEO API KEY
@@ -19,7 +19,7 @@ headers = {
     'Content-Type': 'application/json'
 }
 
-def fetchKeywords(keywords, location_code, language_code):
+def fetchKeywords(keywords, location_code, language_code, progress_callback=None):
     # fetch raw results
     def dataforseo(keyword):
         payload = json.dumps([{
@@ -43,11 +43,13 @@ def fetchKeywords(keywords, location_code, language_code):
 
     # create json file and download
     api_data = []
+    completed = 0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        for result in tqdm(ex.map(process_keyword, keywords),
-            total=len(keywords),
-            desc="Fetching data for keywords (parallel)"):
+        for result in ex.map(process_keyword, keywords):
             api_data.append(result)
+            completed += 1
+            if progress_callback:
+                progress_callback(completed, len(keywords))
 
     ## save file
     api_dataframe = pd.DataFrame(api_data)

@@ -15,15 +15,19 @@ st.set_page_config(
 )
 
 st.title("AI Overviews Analysis Tool")
-st.markdown("Phân tích dữ liệu Google AI Overviews trên 1 bộ từ khóa nhất định cho doanh nghiệp và phân tích đối thủ.")
+st.markdown("Phân tích dữ liệu Google AI Overviews trên 1 bộ từ khóa nhất định cho doanh nghiệp và phân tích đối thủ.")
+
+# Initialize session state
+if 'dataframe' not in st.session_state:
+    st.session_state.dataframe = None
 
 # DEFINING MODES
 route = st.radio(
-    "Chọn chế độ:",
+    "Chọn chế độ:",
     ["Fetch Keywords", "Upload JSON"],
     captions=[
-        "Lấy dữ liệu từ khóa trực tiếp",
-        "Tải lên file API (json) có sẵn",
+        "Lấy dữ liệu từ khóa trực tiếp",
+        "Tải lên file API (json) có sẵn",
     ],
 )
 
@@ -37,16 +41,16 @@ if route == "Fetch Keywords":
 
     with st.form("keyword_form"):
         keywords_input = st.text_area(
-            "Điền từ khóa (mỗi dòng 1 từ, hoặc ngăn cách bằng dấu phẩy):",
-            placeholder="seo là gì\nseo trong marketing\nai trong seo"
+            "Điền từ khóa (mỗi dòng 1 từ, hoặc ngăn cách bằng dấu phẩy):",
+            placeholder="seo là gì\nseo trong marketing\nai trong seo"
         )
         col1, col2 = st.columns(2)
         with col1:
-            location_code = st.text_input("Mã địa điểm (4 chữ số):", placeholder="2740")
+            location_code = st.text_input("Mã địa điểm (4 chữ số):", placeholder="2740")
         with col2:
-            language_code = st.text_input("Mã ngôn ngữ:", placeholder="vi")
+            language_code = st.text_input("Mã ngôn ngữ:", placeholder="vi")
 
-        submit_button = st.form_submit_button("Lấy Data")
+        submit_button = st.form_submit_button("Lấy Data")
 
     ## IF ALL THE NECESSARY INPUTS ARE NOT EMPTY
     if submit_button and keywords_input and location_code and language_code:
@@ -54,22 +58,37 @@ if route == "Fetch Keywords":
         keywords = [k.strip() for k in keywords_input.replace('\n', ',').split(',') if k.strip()]
 
         if keywords:
-            with st.spinner(f"Fetching data for {len(keywords)} keywords..."):
-                try:
-                    api_result = fetchKeywords(keywords, location_code, language_code)
-                    dataframe = apiToDataFrame(api_result)
-                    st.success(f"Successfully fetched data for {len(keywords)} keywords")
-                except Exception as e:
-                    st.error(f"Error fetching data: {str(e)}")
+            # Create progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def update_progress(completed, total):
+                progress = completed / total
+                progress_bar.progress(progress)
+                status_text.text(f"Fetching keywords: {completed}/{total} completed ({progress:.0%})")
+
+            try:
+                status_text.text(f"Starting to fetch {len(keywords)} keywords...")
+                api_result = fetchKeywords(keywords, location_code, language_code, progress_callback=update_progress)
+                st.session_state.dataframe = apiToDataFrame(api_result)
+                progress_bar.progress(1.0)
+                status_text.text(f"Successfully fetched data for {len(keywords)} keywords!")
+                st.success(f"✓ Completed fetching {len(keywords)} keywords")
+            except Exception as e:
+                st.error(f"Error fetching data: {str(e)}")
+
+    # Set dataframe from session state
+    if st.session_state.dataframe is not None:
+        dataframe = st.session_state.dataframe
 
 ## 2. UPLOAD JSON MODE
 elif route == "Upload JSON":
-    st.subheader("Tải JSON File")
+    st.subheader("Tải JSON File")
 
     uploaded_file = st.file_uploader(
-        "Tải lên file JSON",
+        "Tải lên file JSON",
         type=['json'],
-        help="Tải file JSON có sẵn"
+        help="Tải file JSON có sẵn"
     )
 
     ### if uploaded file is not empty
@@ -77,14 +96,18 @@ elif route == "Upload JSON":
         try:
             # Read the uploaded JSON file
             data = json.load(uploaded_file)
-            dataframe = data
-            st.success("Tải lên file thành công")
+            st.session_state.dataframe = data
+            st.success("Tải lên file thành công")
         except Exception as e:
-            st.error(f"Lỗi loading JSON file: {str(e)}")
+            st.error(f"Lỗi loading JSON file: {str(e)}")
+
+    # Set dataframe from session state
+    if st.session_state.dataframe is not None:
+        dataframe = st.session_state.dataframe
 
 # Analysis section
 if dataframe is not None:
-    st.subheader("Kết quả phân tích")
+    st.subheader("Kết quả phân tích")
 
     with st.form("analysis_form"):
         col1, col2 = st.columns(2)
@@ -93,10 +116,10 @@ if dataframe is not None:
         with col2:
             brand_domain = st.text_input("Domain brand:", placeholder="seongon.com")
 
-        analyze_button = st.form_submit_button("Phân tích Data")
+        analyze_button = st.form_submit_button("Phân tích Data")
 
     if analyze_button and brand_name and brand_domain:
-        with st.spinner("Đang phân tích data..."):
+        with st.spinner("Đang phân tích data..."):
             try:
                 # Debug: Show data structure info
                 if isinstance(dataframe, pd.DataFrame):
@@ -115,21 +138,21 @@ if dataframe is not None:
                     # Display analysis summary
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric("Số từ khóa", result.get('keywords_analyzed', 0))
+                        st.metric("Số từ khóa", result.get('keywords_analyzed', 0))
                     with col2:
-                        st.metric("Số AI Overviews", result.get('ai_overviews_found', 0))
+                        st.metric("Số AI Overviews", result.get('ai_overviews_found', 0))
                     with col3:
-                        st.metric("Số đối thủ cạnh tranh", result.get('competitors_identified', 0))
+                        st.metric("Số đối thủ cạnh tranh", result.get('competitors_identified', 0))
 
                     # Get the DataFrames
                     keywords_df = result.get('keywords_df')
                     competitors_df = result.get('competitors_df')
 
                     # Display results in tabs
-                    tab1, tab2 = st.tabs(["Phân tích từ khóa", "Phân tích đối thủ"])
+                    tab1, tab2 = st.tabs(["Phân tích từ khóa", "Phân tích đối thủ"])
 
                     with tab1:
-                        st.subheader("Kết quả của phân tích trên từng từ khóa")
+                        st.subheader("Kết quả của phân tích trên từng từ khóa")
                         if keywords_df is not None and not keywords_df.empty:
                             # Show only readable format
                             display_df = keywords_df.drop(columns=['aio_references']) if 'aio_references' in keywords_df.columns else keywords_df
@@ -141,42 +164,42 @@ if dataframe is not None:
                             # Download button
                             csv_keywords = keywords_df.to_csv(index=False)
                             st.download_button(
-                                label="Tải file",
+                                label="Tải file",
                                 data=csv_keywords,
                                 file_name="keywords_analysis.csv",
                                 mime="text/csv",
                                 key="download_keywords"
                             )
                         else:
-                            st.warning("Không có data từ khóa")
+                            st.warning("Không có data từ khóa")
 
                     with tab2:
-                        st.subheader("Kết quả phân tích đối thủ cạnh tranh tổng quan")
+                        st.subheader("Kết quả phân tích đối thủ cạnh tranh tổng quan")
                         if competitors_df is not None and not competitors_df.empty:
                             # Add explanation of the combined metrics
                             st.info("""
-                            **Chú thích**
-                            - **Citations**: Số lần được làm nguồn trích dẫn trong AI Overviews
-                            - **Mentions**: Số lần được AI Overviews brand mention
+                            **Chú thích**
+                            - **Citations**: Số lần được làm nguồn trích dẫn trong AI Overviews
+                            - **Mentions**: Số lần được AI Overviews brand mention
                             """)
 
                             # Display key metrics
                             col1, col2, col3, col4 = st.columns(4)
                             with col1:
                                 total_citations = competitors_df['cited_count'].sum()
-                                st.metric("Tổng số trích dẫn", total_citations)
+                                st.metric("Tổng số trích dẫn", total_citations)
                             with col2:
                                 total_mentions = competitors_df['mentioned'].sum()
-                                st.metric("Tổng số Brand Mention", total_mentions)
+                                st.metric("Tổng số Brand Mention", total_mentions)
                             with col3:
                                 avg_citation_rate = competitors_df['prompt_cited_rate'].mean()
-                                st.metric("Tỉ lệ trích dẫn trung bình", f"{avg_citation_rate:.1%}")
+                                st.metric("Tỉ lệ trích dẫn trung bình", f"{avg_citation_rate:.1%}")
                             with col4:
                                 avg_mention_rate = competitors_df['mention_rate'].mean()
-                                st.metric("Tỉ lệ Brand Mention trung bình", f"{avg_mention_rate:.1%}")
+                                st.metric("Tỉ lệ Brand Mention trung bình", f"{avg_mention_rate:.1%}")
 
                             # Create visualization
-                            st.subheader("Biểu đồ trực quan hóa danh sách thương hiệu được trích nguồn và mention trên AI Overviews")
+                            st.subheader("Biểu đồ trực quan hóa danh sách thương hiệu được trích nguồn và mention trên AI Overviews")
 
                             # Prepare data for visualization
                             viz_df = competitors_df.copy()
@@ -332,7 +355,7 @@ if dataframe is not None:
                             st.warning("No competitor data available")
 
                     # Summary download - all files in one
-                    st.subheader("Download toàn bộ file")
+                    st.subheader("Download toàn bộ file")
                     col1, col2 = st.columns(2)
 
                     with col1:
@@ -372,7 +395,7 @@ Top 5 Competitors Summary:
                             """
 
                             st.download_button(
-                                label="Tải xuống",
+                                label="Tải xuống",
                                 data=summary_text,
                                 file_name="analysis_summary.txt",
                                 mime="text/plain",
@@ -390,37 +413,37 @@ Top 5 Competitors Summary:
 with st.sidebar:
     st.header("Instructions")
     st.markdown("""
-    **Bước 1:** Chọn chế độ
-    - **Fetch Keywords**: Lấy dữ liệu từ khóa trong thời gian thực
-    - **Upload JSON**: Dùng file JSON API đã tải về từ trước
-                
+    **Bước 1:** Chọn chế độ
+    - **Fetch Keywords**: Lấy dữ liệu từ khóa trong thời gian thực
+    - **Upload JSON**: Dùng file JSON API đã tải về từ trước
+
     --------
 
-    **Bước 2:** (Cho chế độ 1) Tùy chỉnh các thông tin để lấy dữ liệu từ khóa
-    - Điền các từ khóa
-    - Điền mã địa điểm và mã ngôn ngữ
-    
+    **Bước 2:** (Cho chế độ 1) Tùy chỉnh các thông tin để lấy dữ liệu từ khóa
+    - Điền các từ khóa
+    - Điền mã địa điểm và mã ngôn ngữ
+
     --------
 
-    **Step 3:** Phân tích kết quả
-    - Điền tên thương hiệu và domain
-    - Tạo các bảng phân tích chi tiết
+    **Step 3:** Phân tích kết quả
+    - Điền tên thương hiệu và domain
+    - Tạo các bảng phân tích chi tiết
 
     ---------
-                
-    **Mã địa điểm thông dụng:** Tra "<tên quốc gia> numeric location code" trên Google và thêm số 2 ở đầu
+
+    **Mã địa điểm thông dụng:** Tra "<tên quốc gia> numeric location code" trên Google và thêm số 2 ở đầu
     - Vietnam: 704 -> 2704
-                
+
     ---------
-                
-    **Mã ngôn ngữ:**
+
+    **Mã ngôn ngữ:**
     - en: English
     - vi: Vietnamese
     """)
-    
 
-    st.header("Các file tải về")
+
+    st.header("Các file tải về")
     st.markdown("""
-    - `keywords.csv`: Kết quả phân tích từ khóa
-    - `competitor.csv`: Kết quả phân tích đối thủ
+    - `keywords.csv`: Kết quả phân tích từ khóa
+    - `competitor.csv`: Kết quả phân tích đối thủ
     """)
